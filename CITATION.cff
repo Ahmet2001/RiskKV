@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+title: Risk-Routed Heterogeneous KV Memory for Long-Context Transformer Inference
+message: If you use this repository, please cite it.
+type: software
+authors:
+  - given-names: Ahmet
+    family-names: Yilmaz
+repository-code: https://github.com/Ahmet2001/-risk-routed-heterogeneous-kv-memory
+license: MIT

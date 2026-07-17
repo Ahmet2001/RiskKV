@@ -1,0 +1,7 @@
+experiment,model,context,policy,bits,memory_ratio,accuracy,gold_nll,margin,effective_kv_mb
+HM19,Qwen2.5-1.5B,8192,full,16,1.000,1.000,1.292,19.102,224.000
+HM19,Qwen2.5-1.5B,8192,quant_only,3,0.188,0.360,71.199,-5.083,42.000
+HM19,Qwen2.5-1.5B,8192,ours_core,3,0.189,0.240,72.010,-5.041,42.365
+HM20,Qwen2.5-1.5B,8192,full,16,1.000,1.000,1.341,18.706,224.000
+HM20,Qwen2.5-1.5B,8192,quant_only,4,0.250,0.800,7.979,10.964,56.000
+HM20,Qwen2.5-1.5B,8192,ours_core,4,0.252,0.760,7.973,10.677,56.337
