@@ -1,152 +1,294 @@
-# RiskKV: Risk-Aware Heterogeneous KV Cache Compression
+<div align="center">
 
-**Status:** early research prototype / paper draft  
-**Core idea:** KV-cache compression should be treated as **risk-aware fidelity routing**, not only token keep/drop.
+# RiskKV
 
-Long-context Transformer inference is limited by KV-cache memory and bandwidth. Many KV-cache compression methods decide which tokens to keep and which to evict, or apply one uniform compression level to every token.
+### Risk-Aware Heterogeneous KV Cache Compression
 
-**RiskKV** explores a different policy:
+**A research prototype for routing exact-critical context to full-fidelity KV while compressing lower-risk background context with low-bit quantization.**
 
-> Preserve exact-critical spans in **Full KV**, while storing lower-risk background context in **low-bit Quantized KV**.
+[![CI](https://github.com/Ahmet2001/RiskKV/actions/workflows/basic.yml/badge.svg)](https://github.com/Ahmet2001/RiskKV/actions/workflows/basic.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](requirements.txt)
+[![Status](https://img.shields.io/badge/status-research%20prototype-orange.svg)](#current-status)
 
-Exact-critical spans include identifiers, dates, code strings, quoted values, negations, secret markers, and key-value facts. Background context is approximated with 3-bit or 4-bit KV.
+</div>
 
-## Method in one sentence
+---
+
+## Overview
+
+Long-context language-model inference is often limited by the memory footprint and bandwidth cost of the **key-value (KV) cache**. Many compression methods either:
+
+- evict selected tokens, or
+- quantize the entire cache at one uniform precision.
+
+**RiskKV explores a different question:**
+
+> Instead of asking only *which tokens should remain?*, can we ask *which fidelity should each token receive?*
+
+The current prototype keeps known **exact-critical spans**—such as identifiers, dates, code strings, quoted values, negations, secret markers, and key-value facts—at full KV fidelity, while quantizing lower-risk background context to 3-bit or 4-bit representations.
+
+The goal is not to claim that heterogeneous precision always beats uniform quantization. Rather, RiskKV studies **when preserving a small set of brittle exact-recall tokens at higher fidelity can help under aggressive KV compression**.
+
+---
+
+## Method
+
+```mermaid
+flowchart LR
+    A["Long context"] --> B["Identify exact-critical spans"]
+    B --> C["Expand by local window"]
+    C --> D{"Risk-aware fidelity routing"}
+    D -->|Critical span| E["Full KV<br/>FP16 fidelity"]
+    D -->|Background| F["Quantized KV<br/>3-bit / 4-bit proxy"]
+    E --> G["Heterogeneous KV cache"]
+    F --> G
+    G --> H["Long-context inference"]
+```
+
+In one line:
 
 ```text
-exact-critical tokens ± local window -> Full KV
+exact-critical tokens ± local window  -> Full KV
 all remaining background tokens       -> low-bit Quantized KV
 ```
 
-RiskKV is a **risk-aware heterogeneous KV-cache compression** method: different parts of the context are stored at different fidelity levels according to their estimated risk of exact-recall failure.
+For a cache with token-wise fidelity assignments, the effective memory ratio is approximated as
 
-## Motivation
+```text
+R_eff = mean(1.0 for Full-KV tokens, bits/16 for quantized tokens)
+```
 
-Classic KV-cache reduction often asks:
+where FP16 is treated as the full-fidelity reference.
 
-> **Which tokens should we keep?**
+---
 
-RiskKV asks a different question:
+## Why this is interesting
 
-> **Which KV fidelity should each token use?**
+Exact-recall tasks are brittle. A token can look unimportant before the query is known and later become the only token that determines the correct answer.
 
-This distinction matters because a token that appears unimportant under a local attention signal can later become exact-answer critical. If an identifier, date, code string, or negation is evicted or degraded too aggressively, exact recall can fail.
+For example:
 
-Uniform quantization keeps all tokens, but applies the same precision everywhere. RiskKV instead reserves full-fidelity KV for brittle, high-risk spans and compresses the lower-risk background more aggressively.
+```text
+... routine background text ...
+Secret marker: MK53-4897X.
+... more background text ...
 
-## Why heterogeneous KV?
+Question: Which marker was labeled as the secret marker?
+```
 
-RiskKV separates context into two memory classes:
+Uniform low-bit quantization treats the marker and the filler text identically. RiskKV tests whether reserving higher fidelity for the exact-critical span can preserve recall while keeping most of the cache compressed.
 
-- **High-risk / exact-critical tokens:** stored in Full KV.
-- **Lower-risk background tokens:** stored in low-bit Quantized KV.
+---
 
-The goal is to preserve exact information where precision matters most while reducing the effective KV-cache footprint for the rest of the context.
+## Results at a glance
 
-## Current strongest results
-
-### HM-16: clean forced-choice evaluation up to 2K
-
-Qwen2.5-0.5B-Instruct, contexts 512/1024/2048.
+### Qwen2.5-0.5B-Instruct — up to 2K context
 
 | Policy | Effective memory | Accuracy | Gold NLL | Margin |
 |---|---:|---:|---:|---:|
 | Full KV | 1.000 | 0.978 | 4.184 | 15.474 |
-| 4-bit RiskKV | 0.264 | 0.967 | 3.345 | 15.288 |
-| 4-bit quant_only | 0.250 | 0.922 | 3.993 | 14.493 |
-| 3-bit RiskKV | 0.203 | 0.889 | 2.792 | 15.095 |
-| 3-bit quant_only | 0.188 | 0.811 | 4.980 | 13.247 |
+| **4-bit RiskKV** | **0.264** | **0.967** | **3.345** | **15.288** |
+| 4-bit quant-only | 0.250 | 0.922 | 3.993 | 14.493 |
+| **3-bit RiskKV** | **0.203** | **0.889** | **2.792** | **15.095** |
+| 3-bit quant-only | 0.188 | 0.811 | 4.980 | 13.247 |
 
-### HM-17: long-context clean evaluation up to 16K
+### Qwen2.5-0.5B-Instruct — 4K to 16K context
 
-Qwen2.5-0.5B-Instruct, contexts 4096/8192/16384.
+At nearly identical 3-bit effective memory:
 
 | Policy | Effective memory | Accuracy | Gold NLL | Margin |
 |---|---:|---:|---:|---:|
-| Full KV | 1.000 | 0.933 | 3.775 | 16.278 |
-| 3-bit RiskKV | 0.189 | 0.822 | 6.086 | 15.065 |
-| 3-bit quant_only | 0.188 | 0.644 | 9.528 | 12.144 |
-| 4-bit RiskKV | 0.252 | 0.800 | 7.307 | 13.226 |
-| 4-bit quant_only | 0.250 | 0.867 | 7.455 | 12.962 |
+| **3-bit RiskKV** | **0.189** | **0.822** | **6.086** | **15.065** |
+| 3-bit quant-only | 0.188 | 0.644 | 9.528 | 12.144 |
 
-At 16K specifically:
+At **16K specifically**, RiskKV reaches **0.933 accuracy** versus **0.733** for uniform 3-bit quantization.
 
-| Policy | Accuracy |
-|---|---:|
-| Full KV | 1.000 |
-| 3-bit RiskKV | 0.933 |
-| 3-bit quant_only | 0.733 |
+### Larger-model check: Qwen2.5-1.5B-Instruct at 8K
 
-### HM-18: focused 16K / 3-bit system proxy
+The larger-model runs also reveal an important failure regime:
 
-| Policy | Accuracy | Gold NLL | Margin | Effective KV MB |
-|---|---:|---:|---:|---:|
-| Full KV | 1.000 | 4.424 | 16.138 | 192.000 |
-| 3-bit RiskKV | 0.800 | 5.740 | 17.048 | 36.157 |
-| 3-bit quant_only | 0.800 | 8.483 | 14.753 | 36.000 |
+| Setting | RiskKV | Quant-only |
+|---|---:|---:|
+| 3-bit accuracy | 0.240 | **0.360** |
+| 4-bit accuracy | 0.760 | **0.800** |
 
-### HM-19/HM-20: Qwen2.5-1.5B at 8K
+These runs show that the current routing strategy is **not universally better** than uniform quantization. RiskKV is therefore best understood as a controlled proof-of-concept for heterogeneous fidelity allocation.
 
-| Model | Setting | Policy | Accuracy | Gold NLL | Margin | Effective KV MB |
-|---|---|---|---:|---:|---:|---:|
-| Qwen2.5-1.5B | 8K / 3-bit | Full KV | 1.000 | 1.292 | 19.102 | 224.000 |
-| Qwen2.5-1.5B | 8K / 3-bit | quant_only | 0.360 | 71.199 | -5.083 | 42.000 |
-| Qwen2.5-1.5B | 8K / 3-bit | RiskKV | 0.240 | 72.010 | -5.041 | 42.365 |
-| Qwen2.5-1.5B | 8K / 4-bit | Full KV | 1.000 | 1.341 | 18.706 | 224.000 |
-| Qwen2.5-1.5B | 8K / 4-bit | quant_only | 0.800 | 7.979 | 10.964 | 56.000 |
-| Qwen2.5-1.5B | 8K / 4-bit | RiskKV | 0.760 | 7.973 | 10.677 | 56.337 |
+Full result files:
 
-**Takeaway:** the current results suggest that heterogeneous precision can protect exact-recall-critical information under aggressive compression, especially in the smaller-model experiments. Larger-model validation also shows an important limitation: 3-bit quantization is too aggressive for the current proxy on Qwen2.5-1.5B at 8K, while uniform 4-bit quantization remains a strong baseline.
+- [`results/aggregate_results.csv`](results/aggregate_results.csv)
+- [`results/hm19_hm20_bigger_model.csv`](results/hm19_hm20_bigger_model.csv)
+- [`docs/experiments_summary.md`](docs/experiments_summary.md)
 
-RiskKV is therefore presented as an early research direction rather than a universally superior compression policy.
+---
 
-## Important caveat
+## Current status
 
-This repository contains an **inference-time proxy implementation**.
+> [!IMPORTANT]
+> RiskKV is an **early research prototype**, not a production KV-cache backend.
 
-It simulates low-bit KV fidelity by quantizing and dequantizing FP16 tensors. It does **not** currently implement packed 3-bit or 4-bit KV-storage kernels.
+The current implementation:
 
-Therefore, measured GPU peak memory still includes FP16 cache tensors and proxy overhead. The reported `effective_kv_mb` metric should be interpreted as an estimate of the intended packed-cache footprint rather than directly measured packed-kernel memory usage.
+- uses **quantize/dequantize simulation** on FP16 KV tensors;
+- does **not** implement packed 3-bit or 4-bit KV storage kernels;
+- reports `effective_kv_mb` as an intended packed-cache estimate rather than measured packed-kernel GPU memory;
+- uses synthetic controlled exact-recall tasks;
+- currently routes **known annotated exact spans** rather than predicting risk with a learned detector.
+
+This last point is especially important: the present experiments should be interpreted as testing the **value of heterogeneous fidelity when exact-critical positions are known**, not as demonstrating a complete automatic risk detector.
+
+See [`docs/todo.md`](docs/todo.md) for the planned research extensions.
+
+---
 
 ## Quick start
 
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Ahmet2001/RiskKV.git
+cd RiskKV
+```
+
+### 2. Install dependencies
+
 ```bash
 pip install -r requirements.txt
+```
 
+### 3. Run a small experiment
+
+```bash
 python experiments/forced_choice_proxy.py \
   --model Qwen/Qwen2.5-0.5B-Instruct \
   --context 2048 \
   --bits 4 \
   --cases 2 \
-  --out outputs
+  --out outputs/demo
 ```
 
-## Repository layout
+The script evaluates three policies:
+
+- `full` — full-fidelity KV;
+- `quant_only` — uniform low-bit quantization;
+- `ours_core` — heterogeneous RiskKV routing.
+
+It reports accuracy, effective memory ratio, gold-answer NLL, and answer margin.
+
+---
+
+## Reproducing the included runs
+
+Convenience scripts are provided for the main configurations:
+
+```bash
+bash scripts/run_qwen05b_16k_3bit.sh
+bash scripts/run_qwen15b_8k_3bit.sh
+bash scripts/run_qwen15b_8k_4bit.sh
+```
+
+A CUDA-capable GPU is recommended for the longer-context experiments.
+
+---
+
+## Controlled benchmark data
+
+The repository also includes a synthetic exact-recall benchmark under [`hf_dataset/`](hf_dataset/).
+
+The dataset defines several controlled task families:
+
+- `single_needle`
+- `multi_needle`
+- `kv_retrieval`
+- `code_string`
+- `date_negation`
+
+Example fields include the context, query, gold answer, distractors, answer choices, and annotated exact spans.
+
+> [!NOTE]
+> The current main executable focuses on the single-needle forced-choice setup. The broader dataset is included for extending the evaluation.
+
+See [`hf_dataset/README.md`](hf_dataset/README.md) for the dataset schema and examples.
+
+---
+
+## Repository structure
 
 ```text
-experiments/forced_choice_proxy.py     Main proxy evaluation script
-results/aggregate_results.csv          Summary of HM-16/HM-17/HM-18
-results/hm19_hm20_bigger_model.csv     Qwen2.5-1.5B validation results
-paper/paper.md                         Paper draft summary
-docs/experiments_summary.md            Experiment log and interpretation
-hf_dataset/                            Dataset card and examples
+RiskKV/
+├── experiments/
+│   └── forced_choice_proxy.py      # Main proxy implementation
+├── scripts/
+│   ├── run_qwen05b_16k_3bit.sh
+│   ├── run_qwen15b_8k_3bit.sh
+│   └── run_qwen15b_8k_4bit.sh
+├── results/
+│   ├── aggregate_results.csv       # HM16 / HM17 / HM18
+│   └── hm19_hm20_bigger_model.csv # 1.5B validation
+├── hf_dataset/                     # Controlled exact-recall data
+├── docs/
+│   ├── experiments_summary.md
+│   ├── project_story.md
+│   └── todo.md
+├── paper/
+│   └── paper.md                    # Paper summary / research notes
+├── CITATION.cff
+├── LICENSE
+└── README.md
 ```
+
+---
 
 ## Research direction
 
-RiskKV is built around a simple hypothesis:
+RiskKV is built around the hypothesis that **KV-cache compression can be formulated as fidelity allocation, not only token retention**.
 
-> KV-cache compression should be selective not only about **which tokens remain**, but also about **how faithfully different tokens are represented**.
+Natural next steps include:
 
-Future work can extend the current proxy toward:
+- automatic or learned risk scoring;
+- stronger non-oracle routing signals;
+- more than two precision tiers;
+- token- and layer-aware routing;
+- packed low-bit KV kernels;
+- broader long-context benchmarks;
+- stronger eviction and quantization baselines.
 
-- learned or model-derived risk scoring,
-- more than two fidelity tiers,
-- token- and layer-aware precision routing,
-- real packed low-bit KV kernels,
-- broader long-context benchmarks,
-- stronger comparisons against modern KV eviction and quantization baselines.
+The research questions and known gaps are tracked in [`docs/todo.md`](docs/todo.md).
+
+---
 
 ## Citation
 
-If you use this code, please cite the repository or the associated paper draft once available.
+If you use this repository, please cite the project using [`CITATION.cff`](CITATION.cff).
+
+GitHub can generate citation metadata directly from that file via the repository's **Cite this repository** interface.
+
+---
+
+## Getting help
+
+If you find a bug, have a reproduction issue, or want to discuss an experiment, please [open a GitHub issue](https://github.com/Ahmet2001/RiskKV/issues).
+
+When reporting an experiment problem, it is helpful to include:
+
+- model name;
+- context length;
+- quantization bit-width;
+- GPU / CUDA environment;
+- command used;
+- relevant output or traceback.
+
+---
+
+## Maintainer
+
+Maintained by [@Ahmet2001](https://github.com/Ahmet2001).
+
+Contributions, issue reports, and research discussions are welcome.
+
+---
+
+## License
+
+This project is released under the [MIT License](LICENSE).
